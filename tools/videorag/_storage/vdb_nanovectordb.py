@@ -30,6 +30,17 @@ class NanoVectorDBVideoSegmentStorage(BaseVectorStorage):
             "segment_retrieval_top_k", self.segment_retrieval_top_k
         )
     
+    def _load_imagebind_model(self):
+        """Load ImageBind model with appropriate device (Mac compatible)"""
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        embedder = imagebind_model.imagebind_huge(pretrained=True)
+        if device == "mps":
+            embedder = embedder.to(device)
+        else:
+            embedder = embedder.cpu()
+        print(f"ImageBind model loaded on device: {device}")
+        return embedder
+    
     async def upsert(self, video_name, segment_index2name, video_output_format):
         import os
         
@@ -44,7 +55,7 @@ class NanoVectorDBVideoSegmentStorage(BaseVectorStorage):
         os.chdir(project_root)
         
         # Load the model (this will look for .checkpoints relative to the project root)
-        embedder = imagebind_model.imagebind_huge(pretrained=True).cuda()
+        embedder = self._load_imagebind_model()
         
         # Change back to the original directory
         os.chdir(original_dir)
@@ -85,34 +96,54 @@ class NanoVectorDBVideoSegmentStorage(BaseVectorStorage):
     async def query(self, query: str):
         import os
         
-        # Determine the project root directory
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
-        
-        # Store the original working directory
-        original_dir = os.getcwd()
-        
-        # Change to the project root directory
-        os.chdir(project_root)
-        
-        # Load the model (this will look for .checkpoints relative to the project root)
-        embedder = imagebind_model.imagebind_huge(pretrained=True).cuda()
-        
-        # Change back to the original directory
-        os.chdir(original_dir)
-        embedder.eval()
-        
-        embedding = encode_string_query(query, embedder)
-        embedding = embedding[0]
-        results = self._client.query(
-            query=embedding,
-            top_k=self.top_k,
-            better_than_threshold=-1,
-        )
-        results = [
-            {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
-        ]
-        return results
+        try:
+            # Determine the project root directory
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
+            
+            # Store the original working directory
+            original_dir = os.getcwd()
+            
+            # Change to the project root directory
+            os.chdir(project_root)
+            
+            # Load the model (this will look for .checkpoints relative to the project root)
+            embedder = self._load_imagebind_model()
+            
+            # Change back to the original directory
+            os.chdir(original_dir)
+            
+            if embedder is None:
+                print("Warning: ImageBind model failed to load, returning empty results")
+                return []
+                
+            embedder.eval()
+            
+            # Encode query with error handling
+            embedding = encode_string_query(query, embedder)
+            if embedding is None or len(embedding) == 0:
+                print(f"Warning: Failed to encode query '{query[:50]}...', returning empty results")
+                return []
+                
+            embedding = embedding[0]
+            
+            # Query with error handling
+            results = self._client.query(
+                query=embedding,
+                top_k=self.top_k,
+                better_than_threshold=-1,  # Accept all results for now
+            )
+            
+            results = [
+                {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
+            ]
+            
+            print(f"VideoRAG query returned {len(results)} results for query: '{query[:50]}...'")
+            return results
+            
+        except Exception as e:
+            print(f"Error in VideoRAG query for '{query[:50]}...': {str(e)}")
+            return []
     
     async def index_done_callback(self):
         self._client.save()

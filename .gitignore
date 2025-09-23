@@ -1,1 +1,72 @@
+# OS / IDE
 .DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+*.egg-info/
+.eggs/
+.build/
+dist/
+
+# Logs
+*.log
+
+# Local config and secrets
+environment/config/config.yml
+
+# Datasets and user media
+dataset/**
+!dataset/user_text_source/**  # keep text prompts if desired
+
+# If you want to keep some dataset subdirs, whitelist above with !
+# e.g., !dataset/some_reference_texts/**
+
+# Generated outputs/intermediates (redundant if dataset/** ignored)
+dataset/user_output_video/
+dataset/video_edit/video_output/
+dataset/video_edit/scene_output/
+dataset/video_edit/videosource-workdir/
+dataset/video_edit/voice_data/
+dataset/video_edit/voice_gen/
+dataset/video_edit/music_data/
+dataset/video_edit/music_analysis/
+dataset/video_edit/face_db/
+dataset/video_edit/writing_data/
+dataset/user_video/
+
+# Root-level generated subtitles
+news_output_video.srt
+
+# Local model weights / large artifacts
+tools/MiniCPM-V-2_6/
+tools/MiniCPM-V-2_6-int4/
+tools/whisper-large-v3-turbo/
+tools/all-MiniLM-L6-v2/
+tools/seed-vc/checkpoints/
+tools/CosyVoice/pretrained_models/
+tools/fish-speech/checkpoints/
+tools/DiffSinger/checkpoints/
+tools/ImageBind/**/checkpoints/
+tools/.checkpoints/
+
+# Optional: ignore large binaries universally
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wav
+*.mp3
+*.aac
+*.flac
+
+# If you plan to use git-lfs for small demo assets, remove the above
+# and instead configure LFS for selected sample files:
+#   git lfs track "*.mp4"
+#   git lfs track "*.wav"

@@ -2,8 +2,10 @@ import os
 import torch
 import logging
 import glob
+import tempfile
 from tqdm import tqdm
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+from moviepy.editor import VideoFileClip
 
 
 class transcribe_main:
@@ -122,6 +124,42 @@ class transcribe_main:
             self.logger.error(f"Error loading whisper model: {str(e)}")
             raise
     
+    def _extract_audio(self, video_path):
+        """
+        Extract audio from video file and save as temporary WAV file.
+        
+        Args:
+            video_path (str): Path to the video file.
+            
+        Returns:
+            str: Path to the temporary audio file.
+        """
+        self.logger.info(f"Extracting audio from video: {os.path.basename(video_path)}")
+        
+        try:
+            # Create a temporary file for the audio
+            temp_audio_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+            temp_audio_path = temp_audio_file.name
+            temp_audio_file.close()
+            
+            # Extract audio using moviepy
+            with VideoFileClip(video_path) as video:
+                if video.audio is not None:
+                    video.audio.write_audiofile(temp_audio_path, codec='pcm_s16le', verbose=False, logger=None)
+                    self.logger.info(f"Audio extracted successfully to: {temp_audio_path}")
+                    return temp_audio_path
+                else:
+                    self.logger.error(f"No audio track found in video: {video_path}")
+                    # Clean up temporary file
+                    os.unlink(temp_audio_path)
+                    return None
+        except Exception as e:
+            self.logger.error(f"Error extracting audio from {video_path}: {str(e)}")
+            # Clean up temporary file if it exists
+            if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+            return None
+    
     def transcribe_video(self, video_path, force_overwrite=False):
         """
         Transcribe a single video file and save the transcription.
@@ -146,8 +184,17 @@ class transcribe_main:
         self.logger.info(f"Transcribing video: {base_name}")
         
         try:
-            # Run speech recognition
-            result = self.pipe(video_path)
+            # Extract audio from video first
+            audio_path = self._extract_audio(video_path)
+            if audio_path is None:
+                self.logger.error(f"Failed to extract audio from {base_name}")
+                return None
+            
+            # Run speech recognition on the extracted audio
+            result = self.pipe(audio_path)
+            
+            # Clean up temporary audio file
+            os.unlink(audio_path)
             
             # Extract the text
             transcript = result.get("text", "")

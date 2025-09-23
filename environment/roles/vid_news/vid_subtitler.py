@@ -332,11 +332,11 @@ class VideoTranscriber:
         """Alternative method to add subtitles using FFmpeg."""
         print(f"Adding subtitles to {video_path} using FFmpeg...")
         
-        # FFmpeg command with white text (font size 18) and no visible background
+        # FFmpeg command with smaller white text positioned at bottom
         cmd = [
             'ffmpeg', 
             '-i', video_path,
-            '-vf', f"subtitles={srt_path}:force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=0.5'",
+            '-vf', f"subtitles={srt_path}:force_style='FontName=Arial,FontSize=24,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=1,Alignment=2,MarginV=50'",
             '-c:v', 'libx264', 
             '-c:a', 'copy',
             '-y',  # Overwrite output file if it exists

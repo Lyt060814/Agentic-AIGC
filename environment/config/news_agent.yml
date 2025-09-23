@@ -1,4 +1,4 @@
-#news_agent:
-#  idea: "Short movie postcast, colloquial expression within 300 words, notice to identify which actor or host is talking, don't mention movie tickets available issue."
-#  output: "dataset/user_output_video/news_output_video_subtitle.mp4"
-#  video_source_dir: "dataset/user_video/"
+news_agent:
+ idea: "Short tech news, colloquial expression within 250 words, check the accuracy of key terms, e.g. the GPT model name should be 4o instead of 4.0"
+ output: "dataset/user_output_video/tech_news_video.mp4"
+ video_source_dir: "dataset/user_video/"

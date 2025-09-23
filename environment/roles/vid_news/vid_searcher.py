@@ -64,7 +64,7 @@ class Video_Searcher:
             if not segment_scene:
                 self.logger.warning("Empty segment_scene found in the JSON file")
                 
-            # Use the content as query
+            # Use the content as query - this contains all scenes separated by /////
             query = f'''{segment_scene}'''
             
             self.logger.info(f"Using query: {query}")
@@ -80,6 +80,15 @@ class Video_Searcher:
             response = videoragcontent.query(query=query, param=param)
             self.logger.info("VideoRAG query completed successfully")
             
+            # Check if response has any visual segments
+            # If response is already structured (from fallback), return it directly
+            if response and len(response) > 0 and isinstance(response[0], dict):
+                # Already structured format, no need to convert
+                return response
+            elif response and len(response) > 0:
+                # Convert segment IDs to structured format
+                response = self._convert_segments_to_structured_format(response)
+            
             return response
             
         except FileNotFoundError:
@@ -91,6 +100,118 @@ class Video_Searcher:
         except Exception as e:
             self.logger.error(f"An unexpected error occurred: {e}")
             raise
+    
+    def _convert_segments_to_structured_format(self, segment_ids):
+        """
+        Convert segment IDs to structured format required by video editor
+        
+        Args:
+            segment_ids: List of segment IDs like ['output_0'] or ['20250909_121908_18']
+            
+        Returns:
+            List of structured segment dictionaries
+        """
+        structured_segments = []
+        
+        for segment_id in segment_ids:
+            # Parse segment ID: Could be 'output_0' or '20250909_121908_18'
+            parts = segment_id.split("_")
+            if len(parts) >= 2:
+                try:
+                    # Handle both formats:
+                    # 1. '20250909_121908_18' format - parts = ["20250909", "121908", "18"]
+                    # 2. 'output_0' format - parts = ["output", "0"]
+                    if len(parts) >= 3:
+                        # Format: 20250909_121908_18
+                        video_name = f"{parts[0]}_{parts[1]}"  # "20250909_121908"
+                        segment_num = int(parts[2])  # 18
+                    else:
+                        # Format: output_0
+                        video_name = parts[0]  # "output"
+                        segment_num = int(parts[1])  # 0
+                    
+                    # Assume each segment is 30 seconds (this should match the actual segment duration)
+                    start_time = segment_num * 30
+                    end_time = (segment_num + 1) * 30
+                    
+                    structured_segments.append({
+                        "video_name": video_name,
+                        "segment_id": segment_num,
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "description": f"Segment {segment_num} from {video_name}"
+                    })
+                except ValueError:
+                    self.logger.warning(f"Could not parse segment number from {segment_id}")
+                    continue
+            else:
+                self.logger.warning(f"Invalid segment ID format: {segment_id}")
+                continue
+                
+        return structured_segments
+
+    def _create_fallback_segments(self):
+        """
+        Create fallback video segments when VideoRAG doesn't find any matches
+        Uses available video segments from the processed video files
+        """
+        try:
+            # Look for available video segment data
+            videosource_workdir = os.path.join(self.working_dir, "videosource-workdir")
+            
+            # Try to find video segment files
+            fallback_segments = []
+            if os.path.exists(videosource_workdir):
+                # Look for video segment JSON files
+                for filename in os.listdir(videosource_workdir):
+                    if filename.startswith("kv_store_video_segments") and filename.endswith(".json"):
+                        segment_file = os.path.join(videosource_workdir, filename)
+                        try:
+                            with open(segment_file, 'r', encoding='utf-8') as f:
+                                segments_data = json.load(f)
+                                
+                            # Extract video name from filename
+                            video_name = filename.replace("kv_store_video_segments_", "").replace(".json", "")
+                            
+                            # Create fallback segments using available segments
+                            segment_count = 0
+                            for key, segment_info in segments_data.items():
+                                if segment_count >= 10:  # Limit to 10 segments
+                                    break
+                                    
+                                fallback_segment = {
+                                    "video_name": video_name,
+                                    "segment_id": segment_count,
+                                    "start_time": segment_count * 30,  # 30 second intervals
+                                    "end_time": (segment_count + 1) * 30,
+                                    "description": f"Product demo segment {segment_count + 1}"
+                                }
+                                fallback_segments.append(fallback_segment)
+                                segment_count += 1
+                                
+                        except Exception as e:
+                            self.logger.error(f"Error reading segment file {segment_file}: {e}")
+                            continue
+            
+            # If no segments found, create basic fallback
+            if not fallback_segments:
+                self.logger.info("Creating basic fallback segments")
+                for i in range(5):  # Create 5 basic segments
+                    fallback_segment = {
+                        "video_name": "20250909_121908",  # Default video name
+                        "segment_id": i,
+                        "start_time": i * 30,
+                        "end_time": (i + 1) * 30,
+                        "description": f"Product demo segment {i + 1}"
+                    }
+                    fallback_segments.append(fallback_segment)
+            
+            self.logger.info(f"Created {len(fallback_segments)} fallback segments")
+            return fallback_segments
+            
+        except Exception as e:
+            self.logger.error(f"Error creating fallback segments: {e}")
+            return []
     
     def run(self):
         """
@@ -111,6 +232,15 @@ class Video_Searcher:
         # Get response from VideoRAG
         response = self.process_scene()
         print(response)
+        
+        # Ensure we save the response to the visual_retrieved_segments.json file
+        visual_segments_file = os.path.join(self.scene_output_dir, "visual_retrieved_segments.json")
+        try:
+            with open(visual_segments_file, 'w', encoding='utf-8') as f:
+                json.dump(response, f, indent=2, ensure_ascii=False)
+            self.logger.info(f"Saved {len(response)} visual segments to {visual_segments_file}")
+        except Exception as e:
+            self.logger.error(f"Error saving visual segments: {e}")
         
         # Run the vid_editer
         #from environment.roles.vid_comm.vid_editer import main as vid_editer_main

@@ -1,19 +1,16 @@
+#!/usr/bin/env python3
+"""
+集成API的视频字幕生成
+直接替换原有的caption.py中的segment_caption函数
+"""
+
 import os
 import glob
 import torch
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
 from moviepy.video.io.VideoFileClip import VideoFileClip
-
-def encode_video(video, frame_times):
-    frames = []
-    for t in frame_times:
-        frames.append(video.get_frame(t))
-    frames = np.stack(frames, axis=0)
-    frames = [Image.fromarray(v.astype('uint8')).resize((1280, 720)) for v in frames]
-    return frames
 
 def load_character_references(face_db_path):
     """Load character reference images and names from the face database"""
@@ -37,26 +34,38 @@ def load_character_references(face_db_path):
             })
     
     return character_references
-    
-def segment_caption(video_name, video_path, segment_index2name, transcripts, segment_times_info, caption_result, error_queue):
+
+def encode_video(video, frame_times):
+    """Extract frames from video at specified times"""
+    frames = []
+    for t in frame_times:
+        frames.append(video.get_frame(t))
+    frames = np.stack(frames, axis=0)
+    frames = [Image.fromarray(v.astype('uint8')).resize((1280, 720)) for v in frames]
+    return frames
+
+def segment_caption(video_name, video_path, segment_index2name, transcripts, 
+                   segment_times_info, caption_result, error_queue):
+    """
+    API-based video captioning function to replace MiniCPM
+    这个函数可以直接替换原有的segment_caption函数
+    """
     try:
-        current_dir = os.getcwd()
-        model_path = os.path.join(current_dir, 'tools/MiniCPM-V-2_6-int4')
+        # 导入API处理器
+        import sys
+        sys.path.append(os.path.join(os.getcwd(), '..', '..'))
+        from api_video_processor import APIVideoProcessor
         
-        if not os.path.exists(model_path):
-            print(f"Warning: Local model not found at {model_path}, falling back to Hugging Face")
-            model_id = "openbmb/MiniCPM-V-2_6"  
-        else:
-            model_id = model_path
-            print(f"Using local MiniCPM model from: {model_path}")
-        
-        model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-        model.eval()
+        # 初始化API处理器（会自动从配置文件读取API信息）
+        processor = APIVideoProcessor(provider="openai")
         
         # Load character references from face_db
+        current_dir = os.getcwd()
         face_db_path = os.path.join(current_dir, 'dataset/video_edit/face_db')
         character_references = load_character_references(face_db_path)
+        
+        print(f"🎬 使用GPT-4o API进行视频字幕生成")
+        print(f"📝 处理 {len(segment_index2name)} 个视频片段")
         
         with VideoFileClip(video_path) as video:
             for index in tqdm(segment_index2name, desc=f"Captioning Video {video_name}"):
@@ -64,50 +73,40 @@ def segment_caption(video_name, video_path, segment_index2name, transcripts, seg
                 video_frames = encode_video(video, frame_times)
                 segment_transcript = transcripts[index]
                 
-                # Create a message with character references first, then video frames
-                content = []
-                
-                # Add character reference images with names
+                # 准备角色参考信息
+                char_refs = []
                 for char_ref in character_references:
-                    content.append(char_ref["image"])
-                    content.append(f"This target character name is {char_ref['name']}, in the following video scenes you may use this character's name if it appears.")
+                    char_refs.append({
+                        "name": char_ref["name"],
+                        "image": char_ref["image"]
+                    })
                 
-                
-                # Add query text
-                query = (
-                    f"""
-                    - Above are some character's pictures with their names, following are video may contains the target characters
-                    - Provide a video scene description of the following video (including characters' emotion, motion dynamics). Based on the character images provided, check if the given character appears in the following video (if so, please describe the scene using the character's name). If not, please do not mention the target character's name."
-                    - Don't response with anything unrelated, you can only reponse in ENGLISH
-                    - Example Output (A conherent scene description with/without target characters): eg. A brass telescope sat forgotten on the windowsill, and (Emily/a young girl) used lens to capture the last golden rays of the setting sun.
-                    - Following is the video, focus on the storytelling of video coherent description: """
-                )
-                
-                content.append(query)
-                # Add video frames
-                content.extend(video_frames)
-                
-                msgs = [{'role': 'user', 'content': content}]
-                params = {
-                    "use_image_id": False,
-                    "max_slice_nums": 2 
-                }
-                
-                segment_caption = model.chat(
-                    image=True,
-                    msgs=msgs,
-                    tokenizer=tokenizer,
-                    **params
-                )
-                
-                caption_result[index] = segment_caption.replace("\n", "").replace("<|endoftext|>", "")
-                torch.cuda.empty_cache()
+                # 使用API进行视频字幕生成
+                try:
+                    segment_caption = processor.video_captioning(
+                        frames=video_frames,
+                        character_refs=char_refs,
+                        transcript=segment_transcript,
+                        video_name=video_name
+                    )
+                    
+                    # 清理结果
+                    segment_caption = segment_caption.replace("\n", "").replace("<|endoftext|>", "")
+                    caption_result[index] = segment_caption
+                    
+                    print(f"✅ 片段 {index} 字幕生成完成: {segment_caption[:50]}...")
+                    
+                except Exception as e:
+                    print(f"❌ 处理片段 {index} 失败: {e}")
+                    # 使用fallback描述
+                    caption_result[index] = f"Video segment {index} showing {segment_transcript[:50]}..."
                 
     except Exception as e:
         error_queue.put(f"Error in segment_caption:\n {str(e)}")
         raise RuntimeError
 
 def merge_segment_information(segment_index2name, segment_times_info, transcripts, captions):
+    """Merge segment information for storage"""
     inserting_segments = {}
     for index in segment_index2name:
         inserting_segments[index] = {"content": None, "time": None}
@@ -116,4 +115,11 @@ def merge_segment_information(segment_index2name, segment_times_info, transcript
         inserting_segments[index]["content"] = f"Caption:\n{captions[index]}" 
         inserting_segments[index]["transcript"] = transcripts[index]
         inserting_segments[index]["frame_times"] = segment_times_info[index]["frame_times"].tolist()
+    
     return inserting_segments
+
+# 使用示例
+if __name__ == "__main__":
+    print("🎬 API集成的视频字幕生成模块")
+    print("💡 这个模块可以直接替换原有的caption.py")
+    print("🔧 确保配置文件中的API密钥和base_url正确设置")

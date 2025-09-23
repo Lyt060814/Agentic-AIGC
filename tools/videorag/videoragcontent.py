@@ -206,8 +206,19 @@ class VideoRAG:
             
 
     def query(self, query: str, param: QueryParam = QueryParam()):
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aquery(query, param))
+        import asyncio
+        try:
+            # Try to get the current event loop
+            loop = asyncio.get_running_loop()
+            # If we're in an async context, create a task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, self.aquery(query, param))
+                return future.result()
+        except RuntimeError:
+            # No running loop, safe to use run_until_complete
+            loop = always_get_an_event_loop()
+            return loop.run_until_complete(self.aquery(query, param))
 
     async def aquery(self, query: str, param: QueryParam = QueryParam()):
 
