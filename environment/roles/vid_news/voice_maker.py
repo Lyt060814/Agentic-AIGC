@@ -1,10 +1,11 @@
 import sys
 import os
-import torchaudio
 import json
 import re
 import torch
 import traceback
+import torchaudio
+from TTS.api import TTS
 
 class Voice_Maker:
     def __init__(self):
@@ -14,31 +15,15 @@ class Voice_Maker:
         # Navigate to the Vtube root directory (two levels up from agents)
         self.parent_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
         
-        # Path to CosyVoice in the tools directory
-        cosyvoice_dir = os.path.join(self.parent_root, 'tools', 'CosyVoice')
-        matcha_dir = os.path.join(cosyvoice_dir, 'third_party', 'Matcha-TTS')
-        
-        # Add the directories to the path
-        sys.path.append(cosyvoice_dir)
-        sys.path.append(matcha_dir)
-        
-        # Import CosyVoice modules
-        from cosyvoice.cli.cosyvoice import CosyVoice2
-        from cosyvoice.utils.file_utils import load_wav
-        self.CosyVoice2 = CosyVoice2
-        self.load_wav = load_wav
-        
         # Set up paths
-        self.model_path = os.path.join(self.parent_root, 'tools', 'CosyVoice' , 'pretrained_models', 'CosyVoice2-0.5B')
         self.video_edit_dir = os.path.join(self.parent_root, 'dataset', 'video_edit')
         self.voice_data_dir = os.path.join(self.video_edit_dir, 'voice_data')
         self.scene_output_dir = os.path.join(self.video_edit_dir, 'scene_output')
         self.voice_gen_dir = os.path.join(self.video_edit_dir, 'voice_gen')
         
-        
-        # Initialize cosyvoice to None
-        self.cosyvoice = None
-        self.prompt_speech_16k = None
+        # Initialize Coqui TTS to None
+        self.tts = None
+        self.prompt_speech_path = None
 
     def process_with_timestamps(self, json_file_path):
         """Process JSON file and extract segments with proper support for Chinese content"""
@@ -177,7 +162,7 @@ class Voice_Maker:
             
             # Track segment start time
             segment_start_time = current_time
-            segment_waveform = None
+            segment_waveforms = []
             
             # Process each sentence individually
             for i, sentence in enumerate(sentences):
@@ -186,42 +171,44 @@ class Voice_Maker:
                     sentence_preview = sentence[:30] + "..." if len(sentence) > 30 else sentence
                     print(f"  Processing chunk {i+1}/{len(sentences)}: '{sentence_preview}'")
                     
-                    # Create a generator for just this one sentence
-                    def single_sentence_generator():
-                        yield sentence
-                    
-                    chunk_waveform = None
-                    
-                    # Process this single sentence ###############################################################################################
-                    for audio_data in self.cosyvoice.inference_zero_shot(
-                            single_sentence_generator(), 
-                            "hello everyone, I'm your assistant OpenAI Chat GPT.",  
-                            self.prompt_speech_16k, 
-                            stream=False):
-                        
-                        # Store this chunk's waveform
-                        chunk_waveform = audio_data['tts_speech']
-                    
-                    # Add to segment waveform
-                    if chunk_waveform is not None:
-                        if segment_waveform is None:
-                            segment_waveform = chunk_waveform
-                        else:
-                            segment_waveform = torch.cat([segment_waveform, chunk_waveform], dim=1)
-                        print(f"    Successfully processed chunk {i+1}")
+                    # Generate audio using Coqui TTS
+                    # For Tacotron2 model, we don't need language or speaker_wav parameters
+                    if hasattr(self.tts, 'is_multi_lingual') and self.tts.is_multi_lingual:
+                        wav = self.tts.tts(
+                            text=sentence,
+                            speaker_wav=self.prompt_speech_path,
+                            language="en",
+                            split_sentences=False
+                        )
                     else:
-                        print(f"    Warning: No audio generated for chunk {i+1}")
+                        # For single-language models like Tacotron2
+                        wav = self.tts.tts(
+                            text=sentence,
+                            split_sentences=False
+                        )
+                    
+                    # Convert to tensor if needed
+                    if isinstance(wav, list):
+                        wav_tensor = torch.tensor(wav).unsqueeze(0)
+                    else:
+                        wav_tensor = wav.unsqueeze(0) if wav.dim() == 1 else wav
+                    
+                    segment_waveforms.append(wav_tensor)
+                    print(f"    Successfully processed chunk {i+1}")
                     
                 except Exception as e:
                     print(f"  Error processing chunk {i+1}: {str(e)}")
                     print("  Continuing to next chunk...")
             
-            # Save the complete segment audio file
-            if segment_waveform is not None:
-                torchaudio.save(segment_output_file, segment_waveform, self.cosyvoice.sample_rate)
+            # Combine all waveforms for this segment
+            if segment_waveforms:
+                segment_waveform = torch.cat(segment_waveforms, dim=1)
+                
+                # Save the complete segment audio file
+                torchaudio.save(segment_output_file, segment_waveform, 24000)  # XTTS uses 24kHz sample rate
                 
                 # Calculate segment duration
-                segment_duration = len(segment_waveform[0]) / self.cosyvoice.sample_rate
+                segment_duration = len(segment_waveform[0]) / 24000  # XTTS uses 24kHz sample rate
                 
                 # Update the current time
                 current_time += segment_duration
@@ -246,7 +233,7 @@ class Voice_Maker:
             all_files_to_delete.append(os.path.join(output_dir, chunk_file))
         
         # Return timestamp data, all waveforms, and files for cleanup
-        return timestamp_data, all_segment_waveforms, self.cosyvoice.sample_rate, all_files_to_delete
+        return timestamp_data, all_segment_waveforms, 24000, all_files_to_delete
 
     def combine_audio_files(self, all_segment_waveforms, sample_rate, timestamp_data, 
                             output_file=None, segment_files=None):
@@ -294,92 +281,29 @@ class Voice_Maker:
         return output_file, timestamp_json_file
 
     def initialize_model(self):
-        """Initialize the CosyVoice2 model"""
+        """Initialize the Coqui TTS model"""
         print(f"Ensured all necessary directories exist in: {self.video_edit_dir}")
         
         try:
-            # Initialize CosyVoice2
-            print("Loading CosyVoice2 model...")
-            if not os.path.exists(self.model_path):
-                print(f"Warning: CosyVoice model not found at {self.model_path}")
-                print("Creating dummy audio file for testing...")
-                return self._create_dummy_audio()
-                
-            self.cosyvoice = self.CosyVoice2(self.model_path, load_jit=False, load_trt=False, fp16=False)
+            # Initialize Coqui TTS with VITS model for better performance and robustness
+            print("Loading Coqui TTS VITS model...")
+            self.tts = TTS("tts_models/en/ljspeech/vits")
             
-            # Check if prompt file exists, warn if not
-            prompt_speech_path = os.path.join(self.voice_data_dir, 'ava_prompt_16k.wav')
-            if not os.path.exists(prompt_speech_path):
-                print(f"Warning: Prompt speech file not found at {prompt_speech_path}")
-                print("Please ensure you have placed the prompt file in the voice_data directory.")
-                return False
-                
-            # Load the prompt for zero-shot learning
-            print("Loading prompt speech file...")
-            self.prompt_speech_16k = self.load_wav(prompt_speech_path, 16000)
+            # For this model, we don't need a prompt speech file
+            self.prompt_speech_path = None
+            print("Using VITS model (fast and robust)")
             return True
             
         except Exception as e:
-            print(f"Error initializing CosyVoice model: {e}")
-            print("Creating dummy audio file for testing...")
-            return self._create_dummy_audio()
-
-    def _create_dummy_audio(self):
-        """Create dummy audio files for testing when CosyVoice is not available"""
-        try:
-            import subprocess
-            
-            # Create dummy audio file using ffmpeg
-            output_audio_path = os.path.join(self.voice_gen_dir, 'gen_news_audio.wav')
-            os.makedirs(self.voice_gen_dir, exist_ok=True)
-            
-            # Generate 60 seconds of silence
-            cmd = [
-                'ffmpeg', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-                '-t', '60', '-q:a', '9', '-acodec', 'libmp3lame', output_audio_path, '-y'
-            ]
-            
-            subprocess.run(cmd, check=True, capture_output=True)
-            
-            # Create dummy timestamp data
-            timestamp_data = {
-                "sentence_data": {
-                    "count": 4,
-                    "chunks": [
-                        {"id": 1, "timestamp": 15.0, "content": "Product demo introduction"},
-                        {"id": 2, "timestamp": 30.0, "content": "Feature demonstration"},
-                        {"id": 3, "timestamp": 45.0, "content": "Benefits overview"},
-                        {"id": 4, "timestamp": 60.0, "content": "Call to action"}
-                    ]
-                }
-            }
-            
-            timestamp_json_path = os.path.join(self.voice_gen_dir, 'gen_news_audio_timestamps.json')
-            with open(timestamp_json_path, 'w', encoding='utf-8') as f:
-                json.dump(timestamp_data, f, indent=2, ensure_ascii=False)
-            
-            print(f"Created dummy audio: {output_audio_path}")
-            print(f"Created dummy timestamps: {timestamp_json_path}")
-            
-            return {
-                "audio_file": output_audio_path,
-                "timestamp_file": timestamp_json_path,
-                "status": "success"
-            }
-            
-        except Exception as e:
-            print(f"Error creating dummy audio: {e}")
+            print(f"Error initializing Coqui TTS model: {e}")
+            traceback.print_exc()
             return False
 
     def generate_voice(self):
         """Main method to generate voice from JSON content"""
         try:
             # Initialize the model
-            init_result = self.initialize_model()
-            if isinstance(init_result, dict):
-                # Dummy audio was created
-                return init_result
-            elif not init_result:
+            if not self.initialize_model():
                 return False
             
             # Get content from JSON
@@ -433,8 +357,8 @@ class Voice_Maker:
 
 # Add this function to match what's imported in comm_agent.py
 def voice_main():
-    """Function that's called from CommAgent to generate voice"""
-    print("\n=== GENERATING VOICE ===")
+    """Function that's called from CommAgent to generate voice using Coqui TTS"""
+    print("\n=== GENERATING VOICE WITH COQUI TTS ===")
     voice_maker = Voice_Maker()
     result = voice_maker.generate_voice()
     
@@ -453,4 +377,3 @@ def voice_main():
             }
     
     return result
-

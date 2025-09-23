@@ -13,15 +13,14 @@ conda install -y -c conda-forge pynini==2.1.5 ffmpeg
 
 # 4. Install Python dependencies
 pip install -r requirements_mac.txt
+
+# 5. Install TTS (ignore the dependency conflicts)
+pip install TTS
 ```
 
 ### Download Required Models
 
 ```bash
-# Download CosyVoice
-cd tools/CosyVoice
-hf download PillowTa1k/CosyVoice --local-dir pretrained_models
-
 # Download Whisper
 cd tools
 hf download openai/whisper-large-v3-turbo --local-dir whisper-large-v3-turbo
