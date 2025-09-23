@@ -70,3 +70,4 @@ tools/.checkpoints/
 # and instead configure LFS for selected sample files:
 #   git lfs track "*.mp4"
 #   git lfs track "*.wav"
+environment/config/config.yml
