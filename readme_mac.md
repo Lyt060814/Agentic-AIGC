@@ -11,11 +11,14 @@ conda activate aicreator
 # 3. Install system dependencies (pynini, ffmpeg)
 conda install -y -c conda-forge pynini==2.1.5 ffmpeg
 
-# 4. Install Python dependencies
+# 4. Install TTS (ignore the dependency conflicts)
+pip install TTS
+
+# 5. Install Python dependencies
 pip install -r requirements_mac.txt
 
-# 5. Install TTS (ignore the dependency conflicts)
-pip install TTS
+# 6. Install ImageBind
+cd tools/ImageBind && pip install -e .
 ```
 
 ### Download Required Models
