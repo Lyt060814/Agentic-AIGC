@@ -19,7 +19,7 @@ dist/
 *.log
 
 # Local config and secrets
-environment/config/config.yml
+# environment/config/config.yml  # Now tracked for version control
 
 # Datasets and user media
 dataset/**
